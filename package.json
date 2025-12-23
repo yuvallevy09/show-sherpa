@@ -1,0 +1,17 @@
+{
+  "name": "show-sherpa",
+  "private": true,
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "npm run --workspace=frontend dev",
+    "build": "npm run --workspace=frontend build",
+    "lint": "npm run --workspace=frontend lint",
+    "preview": "npm run --workspace=frontend preview",
+    "frontend:install": "npm install --workspace=frontend",
+    "frontend:dev": "npm run --workspace=frontend dev",
+    "frontend:build": "npm run --workspace=frontend build",
+    "backend:dev": "cd backend && uv sync && uv run uvicorn main:app --reload --port 8000"
+  }
+}
