@@ -9,6 +9,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '../utils';
+import { startSpotifyAuth } from "@/lib/spotifyAuth";
+import { getSpotifyClientId, getSpotifyRedirectUri, setSpotifyClientId } from "@/lib/spotifyRuntimeConfig";
 
 export default function SettingsPage() {
   const queryClient = useQueryClient();
@@ -97,29 +99,33 @@ export default function SettingsPage() {
   };
 
   const handleDisconnectSpotify = async () => {
-    await api.auth.updateMe({ 
-      spotify_connected: false,
-      spotify_profile: null 
-    });
+    await api.spotify.disconnect();
     queryClient.invalidateQueries({ queryKey: ['currentUser'] });
   };
 
   const handleReconnectSpotify = async () => {
-    // Simulate reconnection
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    const mockSpotifyData = {
-      display_name: user?.full_name || "Music Lover",
-      top_artists: ["Tame Impala", "The Midnight", "CHVRCHES", "Japanese Breakfast"],
-      top_genres: ["indie rock", "synthwave", "indie pop", "psychedelic rock"]
-    };
-    
-    await api.auth.updateMe({
-      spotify_connected: true,
-      spotify_profile: mockSpotifyData
-    });
-    
-    queryClient.invalidateQueries({ queryKey: ['currentUser'] });
+    // If already connected, this refreshes profile/top artists from Spotify.
+    // If not connected, start OAuth.
+    if (user?.spotify_connected) {
+      await api.spotify.sync();
+      queryClient.invalidateQueries({ queryKey: ['currentUser'] });
+      return;
+    }
+
+    if (window.location.hostname === "localhost") {
+      const nextUrl = window.location.href.replace("://localhost:", "://127.0.0.1:");
+      window.location.replace(nextUrl);
+      return;
+    }
+
+    let clientId = getSpotifyClientId();
+    if (!clientId) {
+      const entered = window.prompt("Enter your Spotify Client ID (from Spotify Developer Dashboard):");
+      if (entered) setSpotifyClientId(entered);
+      clientId = getSpotifyClientId();
+    }
+    const redirectUri = getSpotifyRedirectUri();
+    await startSpotifyAuth({ clientId, redirectUri });
   };
 
   if (isLoading) {

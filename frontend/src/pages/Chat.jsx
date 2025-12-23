@@ -13,69 +13,88 @@ import WelcomeScreen from '@/components/chat/WelcomeScreen';
 import SpotifyConnect from '@/components/onboarding/SpotifyConnect';
 import LocationSelector from '@/components/chat/LocationSelector';
 
-// Mock function to simulate AI response with concert data
-const generateMockResponse = async (userMessage) => {
-  await new Promise(resolve => setTimeout(resolve, 1500));
-  
-  const lowerMessage = userMessage.toLowerCase();
-  
-  if (lowerMessage.includes('concert') || lowerMessage.includes('show') || lowerMessage.includes('near me') || lowerMessage.includes('weekend')) {
+function isConcertQuery(userMessage) {
+  const lower = String(userMessage || "").toLowerCase();
+  return (
+    lower.includes('concert') ||
+    lower.includes('show') ||
+    lower.includes('gig') ||
+    lower.includes('live') ||
+    lower.includes('near me') ||
+    lower.includes('weekend') ||
+    lower.includes('tickets') ||
+    lower.includes('events')
+  );
+}
+
+function isoUtcNoMs(d) {
+  const x = new Date(d);
+  x.setMilliseconds(0);
+  return x.toISOString();
+}
+
+async function generateGroundedResponse(userMessage, currentUser) {
+  if (!isConcertQuery(userMessage)) {
     return {
-      content: "Based on your listening history and location, here are some concerts you might love! I found shows from artists that match your taste in indie rock and alternative music.",
-      concerts: [
-        {
-          name: "Summer Sounds Tour 2024",
-          artist: "The Midnight",
-          venue: "The Bowery Ballroom",
-          date: "2024-02-15",
-          time: "8:00 PM",
-          price: "From $45",
-          genre: "Synthwave",
-          image: "https://images.unsplash.com/photo-1540039155733-5bb30b53aa14?w=400",
-          ticketUrl: "https://ticketmaster.com"
-        },
-        {
-          name: "Neon Dreams World Tour",
-          artist: "CHVRCHES",
-          venue: "Terminal 5",
-          date: "2024-02-18",
-          time: "7:30 PM",
-          price: "From $55",
-          genre: "Synth-pop",
-          image: "https://images.unsplash.com/photo-1501386761578-eac5c94b800a?w=400",
-          ticketUrl: "https://ticketmaster.com"
-        },
-        {
-          name: "Indie Night Live",
-          artist: "Japanese Breakfast",
-          venue: "Brooklyn Steel",
-          date: "2024-02-22",
-          time: "9:00 PM",
-          price: "From $40",
-          genre: "Indie Pop",
-          image: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=400",
-          ticketUrl: "https://ticketmaster.com"
-        },
-        {
-          name: "Alternative Fest",
-          artist: "Tame Impala",
-          venue: "Madison Square Garden",
-          date: "2024-03-01",
-          time: "8:00 PM",
-          price: "From $85",
-          genre: "Psychedelic Rock",
-          image: "https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=400",
-          ticketUrl: "https://ticketmaster.com"
-        }
-      ]
+      content: "I can help you find **real, bookable concerts** using Ticketmaster.\n\nTry:\n- \"Any concerts near me this month?\"\n- \"Shows in NYC this weekend\"\n- \"Find indie rock concerts in Boston\"",
+      concerts: []
     };
   }
-  
+
+  const loc = currentUser?.location || {};
+  const city = loc.city;
+  const countryCode = loc.country;
+  const stateCode = loc.state;
+
+  if (!city || !countryCode || !stateCode) {
+    return {
+      content: "I can search Ticketmaster, but I need your location first. Please click the location pill in the header (top right) and set **City / Country / State**.",
+      concerts: []
+    };
+  }
+
+  const start = new Date();
+  const end = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+  try {
+    const result = await api.ticketmaster.searchEvents({
+      classificationName: "music",
+      city,
+      countryCode,
+      stateCode,
+      startDateTime: isoUtcNoMs(start),
+      endDateTime: isoUtcNoMs(end),
+      sort: "date,asc",
+      size: 10
+    });
+
+    const events = result?.events || [];
+    if (!events.length) {
+      return {
+        content: `I searched Ticketmaster for music events near **${city}, ${stateCode}** in the next 30 days, but didn’t find any results. Try a nearby city, or broaden the time window.`,
+        concerts: []
+      };
+    }
+
+    return {
+      content: `Here are **${events.length}** upcoming music events near **${city}, ${stateCode}** (Ticketmaster):`,
+      concerts: events
+    };
+  } catch (err) {
+    return {
+      content: `I couldn't fetch events from Ticketmaster right now.\n\n**Reason**: ${err?.message || String(err)}\n\nDouble-check your backend has \`TICKETMASTER_API_KEY\` set and that the backend is running.`,
+      concerts: []
+    };
+  }
+}
+
+async function generateAgentResponse(userMessage, history = []) {
+  const res = await api.chat.sendMessage(userMessage, history);
   return {
-    content: "I'd be happy to help you find concerts! You can ask me things like:\n\n- \"What shows are happening near me this weekend?\"\n- \"Find concerts by artists similar to [artist name]\"\n- \"Are there any jazz shows in Chicago next month?\"\n\nJust let me know what you're looking for, and I'll search for the perfect events based on your music taste!",
-    concerts: []
+    content: res?.content || "",
+    concerts: res?.concerts || []
   };
-};
+}
 
 export default function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -188,8 +207,15 @@ export default function ChatPage() {
     setCurrentMessages(newMessages);
     setIsLoading(true);
 
-    // Generate AI response
-    const response = await generateMockResponse(content);
+    // Prefer LangGraph agent (LLM + Ticketmaster tools). If not configured, fall back to Ticketmaster-only.
+    let response;
+    try {
+      const history = newMessages.slice(-10).map((m) => ({ role: m.role, content: m.content }));
+      response = await generateAgentResponse(content, history);
+      if (!response?.content) throw new Error("Empty agent response");
+    } catch (e) {
+      response = await generateGroundedResponse(content, currentUser);
+    }
     
     const assistantMessage = {
       role: 'assistant',

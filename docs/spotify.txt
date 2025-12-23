@@ -1,0 +1,146 @@
+OVERVIEW
+- Overview: https://developer.spotify.com/documentation/web-api
+- Getting started: https://developer.spotify.com/documentation/web-api/tutorials/getting-started
+
+CONCEPTS
+- Access Token: https://developer.spotify.com/documentation/web-api/concepts/access-token
+- API calls: https://developer.spotify.com/documentation/web-api/concepts/api-calls
+- Apps: https://developer.spotify.com/documentation/web-api/concepts/apps
+- Authorization: https://developer.spotify.com/documentation/web-api/concepts/authorization
+- Redirect URIs: https://developer.spotify.com/documentation/web-api/concepts/redirect_uri
+- Playlists: https://developer.spotify.com/documentation/web-api/concepts/playlists
+- Quota modes: https://developer.spotify.com/documentation/web-api/concepts/quota-modes
+- Rate limits: https://developer.spotify.com/documentation/web-api/concepts/rate-limits
+- Scopes: https://developer.spotify.com/documentation/web-api/concepts/scopes
+- Spotify URIs and IDs: https://developer.spotify.com/documentation/web-api/concepts/spotify-uris-ids
+- Track Relinking: https://developer.spotify.com/documentation/web-api/concepts/track-relinking
+
+TUTORIALS
+- Authorization code: https://developer.spotify.com/documentation/web-api/tutorials/code-flow
+- Authorization code PKCE: https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow
+- Client credentials: https://developer.spotify.com/documentation/web-api/tutorials/client-credentials-flow
+- Implicit grant [Deprecated]: https://developer.spotify.com/documentation/web-api/tutorials/implicit-flow
+- Refreshing tokens: https://developer.spotify.com/documentation/web-api/tutorials/refreshing-tokens
+- Migration: Implicit grant to Authorization code: https://developer.spotify.com/documentation/web-api/tutorials/migration-implicit-auth-code
+- Migration: Insecure redirect URI: https://developer.spotify.com/documentation/web-api/tutorials/migration-insecure-redirect-uri
+
+HOW-TOS
+- Display your Spotify profile data in a web app: https://developer.spotify.com/documentation/web-api/howtos/web-app-profile
+
+REFERENCE
+
+ALBUMS
+- Get Album: https://developer.spotify.com/documentation/web-api/reference/get-an-album
+- Get Several Albums: https://developer.spotify.com/documentation/web-api/reference/get-multiple-albums
+- Get Album Tracks: https://developer.spotify.com/documentation/web-api/reference/get-an-albums-tracks
+- Get User's Saved Albums: https://developer.spotify.com/documentation/web-api/reference/get-users-saved-albums
+- Save Albums for Current User: https://developer.spotify.com/documentation/web-api/reference/save-albums-user
+- Remove Users' Saved Albums: https://developer.spotify.com/documentation/web-api/reference/remove-albums-user
+- Check User's Saved Albums: https://developer.spotify.com/documentation/web-api/reference/check-users-saved-albums
+- Get New Releases: https://developer.spotify.com/documentation/web-api/reference/get-new-releases
+
+ARTISTS
+- Get Artist: https://developer.spotify.com/documentation/web-api/reference/get-an-artist
+- Get Several Artists: https://developer.spotify.com/documentation/web-api/reference/get-multiple-artists
+- Get Artist's Albums: https://developer.spotify.com/documentation/web-api/reference/get-an-artists-albums
+- Get Artist's Top Tracks: https://developer.spotify.com/documentation/web-api/reference/get-an-artists-top-tracks
+- Get Artist's Related Artists: https://developer.spotify.com/documentation/web-api/reference/get-an-artists-related-artists
+
+AUDIOBOOKS
+- Get an Audiobook: https://developer.spotify.com/documentation/web-api/reference/get-an-audiobook
+- Get Several Audiobooks: https://developer.spotify.com/documentation/web-api/reference/get-multiple-audiobooks
+- Get Audiobook Chapters: https://developer.spotify.com/documentation/web-api/reference/get-audiobook-chapters
+- Get User's Saved Audiobooks: https://developer.spotify.com/documentation/web-api/reference/get-users-saved-audiobooks
+- Save Audiobooks for Current User: https://developer.spotify.com/documentation/web-api/reference/save-audiobooks-user
+- Remove User's Saved Audiobooks: https://developer.spotify.com/documentation/web-api/reference/remove-audiobooks-user
+- Check User's Saved Audiobooks: https://developer.spotify.com/documentation/web-api/reference/check-users-saved-audiobooks
+
+CATEGORIES
+- Get Several Browse Categories: https://developer.spotify.com/documentation/web-api/reference/get-categories
+- Get Single Browse Category: https://developer.spotify.com/documentation/web-api/reference/get-a-category
+
+CHAPTERS
+- Get a Chapter: https://developer.spotify.com/documentation/web-api/reference/get-a-chapter
+- Get Several Chapters: https://developer.spotify.com/documentation/web-api/reference/get-several-chapters
+
+EPISODES
+- Get Episode: https://developer.spotify.com/documentation/web-api/reference/get-an-episode
+- Get Several Episodes: https://developer.spotify.com/documentation/web-api/reference/get-multiple-episodes
+- Get User's Saved Episodes: https://developer.spotify.com/documentation/web-api/reference/get-users-saved-episodes
+- Save Episodes for Current User: https://developer.spotify.com/documentation/web-api/reference/save-episodes-user
+- Remove User's Saved Episodes: https://developer.spotify.com/documentation/web-api/reference/remove-episodes-user
+- Check User's Saved Episodes: https://developer.spotify.com/documentation/web-api/reference/check-users-saved-episodes
+
+GENRES
+- Get Available Genre Seeds: https://developer.spotify.com/documentation/web-api/reference/get-recommendation-genres
+
+MARKETS
+- Get Available Markets: https://developer.spotify.com/documentation/web-api/reference/get-available-markets
+
+PLAYER
+- Get Playback State: https://developer.spotify.com/documentation/web-api/reference/get-information-about-the-users-current-playback
+- Transfer Playback: https://developer.spotify.com/documentation/web-api/reference/transfer-a-users-playback
+- Get Available Devices: https://developer.spotify.com/documentation/web-api/reference/get-a-users-available-devices
+- Get Currently Playing Track: https://developer.spotify.com/documentation/web-api/reference/get-the-users-currently-playing-track
+- Start/Resume Playback: https://developer.spotify.com/documentation/web-api/reference/start-a-users-playback
+- Pause Playback: https://developer.spotify.com/documentation/web-api/reference/pause-a-users-playback
+- Skip To Next: https://developer.spotify.com/documentation/web-api/reference/skip-users-playback-to-next-track
+- Skip To Previous: https://developer.spotify.com/documentation/web-api/reference/skip-users-playback-to-previous-track
+- Seek To Position: https://developer.spotify.com/documentation/web-api/reference/seek-to-position-in-currently-playing-track
+- Set Repeat Mode: https://developer.spotify.com/documentation/web-api/reference/set-repeat-mode-on-users-playback
+- Set Playback Volume: https://developer.spotify.com/documentation/web-api/reference/set-volume-for-users-playback
+- Toggle Playback Shuffle: https://developer.spotify.com/documentation/web-api/reference/toggle-shuffle-for-users-playback
+- Get Recently Played Tracks: https://developer.spotify.com/documentation/web-api/reference/get-recently-played
+- Get the User's Queue: https://developer.spotify.com/documentation/web-api/reference/get-queue
+- Add Item to Playback Queue: https://developer.spotify.com/documentation/web-api/reference/add-to-queue
+
+PLAYLISTS
+- Get Playlist: https://developer.spotify.com/documentation/web-api/reference/get-playlist
+- Change Playlist Details: https://developer.spotify.com/documentation/web-api/reference/change-playlist-details
+- Get Playlist Items: https://developer.spotify.com/documentation/web-api/reference/get-playlists-tracks
+- Update Playlist Items: https://developer.spotify.com/documentation/web-api/reference/reorder-or-replace-playlists-tracks
+- Add Items to Playlist: https://developer.spotify.com/documentation/web-api/reference/add-tracks-to-playlist
+- Remove Playlist Items: https://developer.spotify.com/documentation/web-api/reference/remove-tracks-playlist
+- Get Current User's Playlists: https://developer.spotify.com/documentation/web-api/reference/get-a-list-of-current-users-playlists
+- Get User's Playlists: https://developer.spotify.com/documentation/web-api/reference/get-list-users-playlists
+- Create Playlist: https://developer.spotify.com/documentation/web-api/reference/create-playlist
+- Get Featured Playlists: https://developer.spotify.com/documentation/web-api/reference/get-featured-playlists
+- Get Category's Playlists: https://developer.spotify.com/documentation/web-api/reference/get-a-categories-playlists
+- Get Playlist Cover Image: https://developer.spotify.com/documentation/web-api/reference/get-playlist-cover
+- Add Custom Playlist Cover Image: https://developer.spotify.com/documentation/web-api/reference/upload-custom-playlist-cover
+
+SEARCH
+- Search for Item: https://developer.spotify.com/documentation/web-api/reference/search
+
+SHOWS
+- Get Show: https://developer.spotify.com/documentation/web-api/reference/get-a-show
+- Get Several Shows: https://developer.spotify.com/documentation/web-api/reference/get-multiple-shows
+- Get Show Episodes: https://developer.spotify.com/documentation/web-api/reference/get-a-shows-episodes
+- Get User's Saved Shows: https://developer.spotify.com/documentation/web-api/reference/get-users-saved-shows
+- Save Shows for Current User: https://developer.spotify.com/documentation/web-api/reference/save-shows-user
+- Remove User's Saved Shows: https://developer.spotify.com/documentation/web-api/reference/remove-shows-user
+- Check User's Saved Shows: https://developer.spotify.com/documentation/web-api/reference/check-users-saved-shows
+
+TRACKS
+- Get Track: https://developer.spotify.com/documentation/web-api/reference/get-track
+- Get Several Tracks: https://developer.spotify.com/documentation/web-api/reference/get-several-tracks
+- Get User's Saved Tracks: https://developer.spotify.com/documentation/web-api/reference/get-users-saved-tracks
+- Save Tracks for Current User: https://developer.spotify.com/documentation/web-api/reference/save-tracks-user
+- Remove User's Saved Tracks: https://developer.spotify.com/documentation/web-api/reference/remove-tracks-user
+- Check User's Saved Tracks: https://developer.spotify.com/documentation/web-api/reference/check-users-saved-tracks
+- Get Several Tracks' Audio Features: https://developer.spotify.com/documentation/web-api/reference/get-several-audio-features
+- Get Track's Audio Features: https://developer.spotify.com/documentation/web-api/reference/get-audio-features
+- Get Track's Audio Analysis: https://developer.spotify.com/documentation/web-api/reference/get-audio-analysis
+- Get Recommendations: https://developer.spotify.com/documentation/web-api/reference/get-recommendations
+
+USERS
+- Get Current User's Profile: https://developer.spotify.com/documentation/web-api/reference/get-current-users-profile
+- Get User's Top Items: https://developer.spotify.com/documentation/web-api/reference/get-users-top-artists-and-tracks
+- Get User's Profile: https://developer.spotify.com/documentation/web-api/reference/get-users-profile
+- Follow Playlist: https://developer.spotify.com/documentation/web-api/reference/follow-playlist
+- Unfollow Playlist: https://developer.spotify.com/documentation/web-api/reference/unfollow-playlist
+- Get Followed Artists: https://developer.spotify.com/documentation/web-api/reference/get-followed
+- Follow Artists or Users: https://developer.spotify.com/documentation/web-api/reference/follow-artists-users
+- Unfollow Artists or Users: https://developer.spotify.com/documentation/web-api/reference/unfollow-artists-users
+- Check If User Follows Artists or Users: https://developer.spotify.com/documentation/web-api/reference/check-current-user-follows
+- Check if Current User Follows Playlist: https://developer.spotify.com/documentation/web-api/reference/check-if-user-follows-playlist

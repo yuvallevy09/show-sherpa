@@ -12,6 +12,24 @@ dist
 dist-ssr
 *.local
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Python virtual environments (uv typically uses .venv)
+.venv/
+venv/
+ENV/
+env/
+
+# uv / packaging
+.uv/
+.python-version
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

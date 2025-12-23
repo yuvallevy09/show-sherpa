@@ -3,6 +3,7 @@ import Layout from "./Layout.jsx";
 import Chat from "./Chat";
 
 import Settings from "./Settings";
+import SpotifyCallback from "./SpotifyCallback.jsx";
 
 import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-router-dom';
 
@@ -42,6 +43,8 @@ function PagesContent() {
                 <Route path="/Chat" element={<Chat />} />
                 
                 <Route path="/Settings" element={<Settings />} />
+
+                <Route path="/spotify/callback" element={<SpotifyCallback />} />
                 
             </Routes>
         </Layout>

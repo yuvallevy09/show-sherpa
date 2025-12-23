@@ -1,0 +1,2 @@
+- https://developer.ticketmaster.com/products-and-docs/apis/getting-started/
+- https://developer.ticketmaster.com/products-and-docs/apis/discovery-api/v2/

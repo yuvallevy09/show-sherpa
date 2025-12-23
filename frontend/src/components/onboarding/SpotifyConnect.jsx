@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '@/api/apiClient';
+import { startSpotifyAuth } from "@/lib/spotifyAuth";
+import { getSpotifyClientId, getSpotifyRedirectUri, setSpotifyClientId } from "@/lib/spotifyRuntimeConfig";
 
 export default function SpotifyConnect({ onComplete }) {
   const [step, setStep] = useState(1); // 1: welcome, 2: spotify, 3: location
@@ -17,25 +19,29 @@ export default function SpotifyConnect({ onComplete }) {
 
   const handleSpotifyConnect = async () => {
     setIsConnecting(true);
-    
-    // Simulate Spotify OAuth flow
-    // In production, this would redirect to Spotify OAuth
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Mock Spotify data
-    const mockSpotifyData = {
-      display_name: "Music Lover",
-      top_artists: ["Tame Impala", "The Midnight", "CHVRCHES", "Japanese Breakfast"],
-      top_genres: ["indie rock", "synthwave", "indie pop", "psychedelic rock"]
-    };
-    
-    await api.auth.updateMe({
-      spotify_connected: true,
-      spotify_profile: mockSpotifyData
-    });
-    
-    setIsConnecting(false);
-    setStep(3);
+
+    try {
+      // Spotify requires loopback IP literals (not localhost). Also, PKCE state is stored per-origin,
+      // so force the app to run on 127.0.0.1 before starting auth.
+      if (window.location.hostname === "localhost") {
+        const nextUrl = window.location.href.replace("://localhost:", "://127.0.0.1:");
+        window.location.replace(nextUrl);
+        return;
+      }
+
+      let clientId = getSpotifyClientId();
+      if (!clientId) {
+        const entered = window.prompt("Enter your Spotify Client ID (from Spotify Developer Dashboard):");
+        if (entered) setSpotifyClientId(entered);
+        clientId = getSpotifyClientId();
+      }
+
+      const redirectUri = getSpotifyRedirectUri();
+      await startSpotifyAuth({ clientId, redirectUri });
+    } catch (e) {
+      setIsConnecting(false);
+      alert(e?.message || String(e));
+    }
   };
 
   const handleLocationSubmit = async (e) => {

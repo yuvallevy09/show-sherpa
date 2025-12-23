@@ -123,6 +123,41 @@ export const api = {
     Conversation: ConversationStore,
   },
 
+  ticketmaster: {
+    async searchEvents(params = {}) {
+      const qs = new URLSearchParams();
+      Object.entries(params || {}).forEach(([k, v]) => {
+        if (v === undefined || v === null) return;
+        const s = String(v).trim();
+        if (!s) return;
+        qs.set(k, s);
+      });
+      const suffix = qs.toString() ? `?${qs.toString()}` : "";
+      return await apiRequest(`/ticketmaster/events${suffix}`);
+    },
+  },
+
+  chat: {
+    async sendMessage(message, history = []) {
+      return await apiRequest("/chat", { method: "POST", body: { message, history } });
+    },
+  },
+
+  spotify: {
+    async exchange({ code, code_verifier }) {
+      return await apiRequest("/spotify/exchange", { method: "POST", body: { code, code_verifier } });
+    },
+    async sync() {
+      return await apiRequest("/spotify/sync", { method: "POST" });
+    },
+    async disconnect() {
+      return await apiRequest("/spotify/disconnect", { method: "POST" });
+    },
+    async status() {
+      return await apiRequest("/spotify/status");
+    },
+  },
+
   // Integrations will be reintroduced as backend endpoints if needed.
   integrations: {},
 };
