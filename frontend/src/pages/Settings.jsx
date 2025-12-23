@@ -43,27 +43,104 @@ export default function SettingsPage() {
 
   const handleGetCurrentLocation = () => {
     setIsGettingLocation(true);
+
+    const explainGeoError = (err) => {
+      // GeolocationPositionError codes: 1=PERMISSION_DENIED, 2=POSITION_UNAVAILABLE, 3=TIMEOUT
+      const code = err?.code;
+      const msg = err?.message || String(err || "");
+      if (code === 1) {
+        return (
+          "Location permission is blocked.\n\n" +
+          "Fix:\n" +
+          "- Click the lock icon in the address bar → Site settings → Location → Allow\n" +
+          "- Or check your OS Location Services are enabled for your browser\n\n" +
+          `Details: (${code}) ${msg}`
+        );
+      }
+      if (code === 3) {
+        return (
+          "Timed out while getting your location.\n\n" +
+          "Fix:\n" +
+          "- Try again\n" +
+          "- Make sure Wi‑Fi is on (helps desktop geolocation)\n\n" +
+          `Details: (${code}) ${msg}`
+        );
+      }
+      return (
+        "Unable to get your location.\n\n" +
+        "Fix:\n" +
+        "- Allow location access for this site\n" +
+        "- Ensure OS Location Services are enabled\n\n" +
+        `Details: (${code || "?"}) ${msg}`
+      );
+    };
     
     if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const mockLocation = {
-            city: 'New York',
-            country: 'US',
-            state: 'NY'
-          };
-          
-          setLocation(mockLocation);
-          await api.auth.updateMe({ location: mockLocation });
-          queryClient.invalidateQueries({ queryKey: ['currentUser'] });
-          setIsGettingLocation(false);
+      const getPosition = () =>
+        navigator.geolocation.getCurrentPosition(
+          async (position) => {
+          try {
+            const { latitude, longitude } = position.coords || {};
+            if (typeof latitude !== "number" || typeof longitude !== "number") {
+              throw new Error("Missing coordinates");
+            }
+
+            // Reverse-geocode without an API key (best-effort). If it fails, we still stop loading
+            // and let the user fill in the fields manually.
+            const url =
+              `https://api.bigdatacloud.net/data/reverse-geocode-client?` +
+              `latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}&localityLanguage=en`;
+            const res = await fetch(url, { headers: { Accept: "application/json" } });
+            if (!res.ok) throw new Error(`Reverse geocode failed (${res.status})`);
+            const data = await res.json();
+
+            const city =
+              (data.city || data.locality || data.principalSubdivision || "").trim();
+            const country = String(data.countryCode || "").trim();
+
+            // Example principalSubdivisionCode: "US-NY" -> "NY"
+            const subdivisionCode = String(data.principalSubdivisionCode || "").trim();
+            const state = subdivisionCode.includes("-")
+              ? subdivisionCode.split("-").pop()
+              : String(data.principalSubdivision || "").trim();
+
+            // Populate fields only; user must click Save Location to persist.
+            setLocation({
+              city: city || "",
+              country: country || "",
+              state: state || "",
+            });
+          } catch (e) {
+            console.error("Error resolving current location:", e);
+            alert("I couldn't auto-fill your city/state from GPS. Please enter it manually.");
+          } finally {
+            setIsGettingLocation(false);
+          }
         },
         (error) => {
           console.error('Error getting location:', error);
           setIsGettingLocation(false);
-          alert('Unable to get your location. Please enter it manually.');
-        }
-      );
+          alert(explainGeoError(error));
+        },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
+        );
+
+      // If Permissions API is available, preflight for a clearer message.
+      if (navigator.permissions?.query) {
+        navigator.permissions
+          .query({ name: "geolocation" })
+          .then((status) => {
+            if (status.state === "denied") {
+              setIsGettingLocation(false);
+              alert(explainGeoError({ code: 1, message: "Permission denied" }));
+              return;
+            }
+            getPosition();
+          })
+          .catch(() => getPosition());
+      } else {
+        getPosition();
+      }
     } else {
       setIsGettingLocation(false);
       alert('Geolocation is not supported by your browser.');
