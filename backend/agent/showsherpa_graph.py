@@ -1420,7 +1420,7 @@ def _plan_node_factory(profile: dict[str, Any]):
                 pass
         return {"messages": out_messages, "events": collected, "used_tool": True}
 
-    def respond_node(state: SherpaState) -> dict[str, Any]:
+    def respond_legacy_node(state: SherpaState) -> dict[str, Any]:
         # If we didn't call any tool, keep the planner's response (often a clarifying question).
         if not state.get("used_tool"):
             return {"messages": []}
@@ -1436,105 +1436,9 @@ def _plan_node_factory(profile: dict[str, Any]):
                 ]
             }
 
-        # If Node I produced picks_payload, render deterministically from it.
-        picks_payload = state.get("picks_payload") or {}
-        if isinstance(picks_payload, dict) and picks_payload.get("picks"):
-            try:
-                parsed = PicksWhyOutput.model_validate(picks_payload)
-            except Exception:
-                parsed = None
-            if parsed:
-                by_id = {str(ev.get("id") or ""): ev for ev in events}
-                lines = []
-                for p in parsed.picks[:3]:
-                    ev = by_id.get(p.id)
-                    if not ev:
-                        continue
-                    line = _render_event_line(ev)
-                    why = (p.why or "").strip()
-                    if why:
-                        line = line + f"\n  _Why_: {why}"
-                    lines.append(line)
-                intro = (parsed.intro or "Here are a few real, bookable concerts I found:").strip()
-                content = intro + "\n\n" + "\n".join(lines if lines else [_render_events(events, limit=5)])
-                if parsed.question:
-                    content += "\n\n" + str(parsed.question).strip()
-                filter_notes = str(state.get("filter_notes") or "").strip()
-                if filter_notes:
-                    content += "\n\n" + filter_notes
-                return {"messages": [AIMessage(content=content)]}
-
-        # Strong hallucination control: ask the LLM to pick event IDs + reasons, then we render facts ourselves.
-        compact_events = [
-            {
-                "id": ev.get("id") or "",
-                "name": ev.get("name") or "",
-                "artist": ev.get("artist") or "",
-                "venue": ev.get("venue") or "",
-                "date": ev.get("date") or "",
-                "time": ev.get("time") or "",
-                "price": ev.get("price") or "",
-                "genre": ev.get("genre") or "",
-                "ticketUrl": ev.get("ticketUrl") or "",
-            }
-            for ev in events
-        ]
-
-        sys = SystemMessage(
-            content=_system_profile(profile)
-            + "\nYou will be given Ticketmaster events as JSON.\n"
-            "Return ONLY valid JSON with this shape:\n"
-            '{ "intro": string, "picks": [ { "id": string, "why": string } ], "question": string|null }\n'
-            "- Picks must use ONLY IDs that appear in the provided events.\n"
-            "- Do not include event facts (date/venue/price) in the JSON; we will render those ourselves.\n"
-            "- Keep intro concise.\n"
-        )
-        user = HumanMessage(content=json.dumps({"events": compact_events}, ensure_ascii=False))
-        draft = llm.invoke([sys, user]).content or ""
-
-        picks: list[dict[str, str]] = []
-        intro = "Here are a few real, bookable concerts I found:"
-        question: str | None = None
-        try:
-            parsed = json.loads(draft)
-            intro = str(parsed.get("intro") or intro)
-            question_val = parsed.get("question")
-            question = None if question_val in (None, "", "null") else str(question_val)
-            raw_picks = parsed.get("picks") or []
-            if isinstance(raw_picks, list):
-                for p in raw_picks[:3]:
-                    if not isinstance(p, dict):
-                        continue
-                    pid = str(p.get("id") or "").strip()
-                    why = str(p.get("why") or "").strip()
-                    if pid:
-                        picks.append({"id": pid, "why": why})
-        except Exception:
-            # If parsing fails, fall back to deterministic rendering.
-            picks = []
-
-        by_id = {str(ev.get("id") or ""): ev for ev in events}
-        chosen = [by_id.get(p["id"]) for p in picks if by_id.get(p["id"])]
-        chosen = [c for c in chosen if c]
-        if not chosen:
-            # deterministic fallback: show first 5
-            content = intro + "\n\n" + _render_events(events, limit=5)
-            return {"messages": [AIMessage(content=content)]}
-
-        lines = []
-        for p in picks:
-            ev = by_id.get(p["id"])
-            if not ev:
-                continue
-            line = _render_event_line(ev)
-            why = p.get("why") or ""
-            if why:
-                line = line + f"\n  _Why_: {why}"
-            lines.append(line)
-
-        content = intro.strip() + "\n\n" + "\n".join(lines)
-        if question:
-            content += "\n\n" + str(question).strip()
+        # Legacy path: keep it fully grounded and deterministic.
+        # (The deterministic pipeline uses Node I + Node J for LLM picks/explanations.)
+        content = "Here are a few real, bookable concerts I found:\n\n" + _render_events(events, limit=5)
         filter_notes = str(state.get("filter_notes") or "").strip()
         if filter_notes:
             content += "\n\n" + filter_notes
@@ -1589,7 +1493,7 @@ def _plan_node_factory(profile: dict[str, Any]):
     builder.add_node("render_node", render_node)
     builder.add_node("plan_node", plan_node)
     builder.add_node("tool_node", tool_node)
-    builder.add_node("respond_node", respond_node)
+    builder.add_node("respond_legacy_node", respond_legacy_node)
     builder.add_edge(START, "ingest_node")
     builder.add_edge("ingest_node", "memory_node")
     builder.add_edge("memory_node", "route_and_extract_node")
@@ -1634,9 +1538,9 @@ def _plan_node_factory(profile: dict[str, Any]):
     builder.add_edge("picks_why_node", "render_node")
     builder.add_edge("render_node", END)
 
-    builder.add_conditional_edges("plan_node", should_continue, ["tool_node", "respond_node"])
-    builder.add_edge("tool_node", "respond_node")
-    builder.add_edge("respond_node", END)
+    builder.add_conditional_edges("plan_node", should_continue, ["tool_node", "respond_legacy_node"])
+    builder.add_edge("tool_node", "respond_legacy_node")
+    builder.add_edge("respond_legacy_node", END)
     graph = builder.compile()
 
     return graph
