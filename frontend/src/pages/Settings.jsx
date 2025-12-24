@@ -109,6 +109,7 @@ export default function SettingsPage() {
               city: city || "",
               country: country || "",
               state: state || "",
+              coordinates: { lat: latitude, lng: longitude },
             });
           } catch (e) {
             console.error("Error resolving current location:", e);

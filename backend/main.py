@@ -21,6 +21,14 @@ from spotify_client import (
     spotify_exchange_code,
     spotify_refresh_token,
 )
+from spotify_state import (
+    SPOTIFY_TOKENS as _SPOTIFY_TOKENS,
+    spotify_clear_tokens,
+    spotify_get_access_token,
+    spotify_is_connected,
+    spotify_set_tokens,
+)
+from ticketmaster_geo import geohash_encode
 
 
 def _load_env_file(path: str) -> None:
@@ -54,6 +62,8 @@ class Location(BaseModel):
     city: str = ""
     country: str = ""
     state: str = ""
+    # Optional coordinates (used for geo-radius searches)
+    coordinates: Optional[dict[str, float]] = None
 
 
 class SpotifyProfile(BaseModel):
@@ -106,36 +116,11 @@ _USER: User = User(
     location=Location(city="New York", country="US", state="NY"),
 )
 
-# In-memory Spotify token storage (incremental step). Do NOT expose to frontend.
-_SPOTIFY_TOKENS: dict[str, str] = {}
-
-
-def _spotify_is_connected() -> bool:
-    return bool(_SPOTIFY_TOKENS.get("access_token") and _SPOTIFY_TOKENS.get("refresh_token"))
-
-
-def _spotify_token_expired() -> bool:
-    exp = _SPOTIFY_TOKENS.get("expires_at") or ""
-    if not exp:
-        return True
-    try:
-        # expires_at stored as Z
-        dt = datetime.fromisoformat(exp.replace("Z", "+00:00"))
-        return datetime.now(timezone.utc) >= dt
-    except Exception:
-        return True
-
-
 def _spotify_get_access_token() -> str:
-    if not _spotify_is_connected():
+    try:
+        return spotify_get_access_token()
+    except RuntimeError:
         raise HTTPException(status_code=401, detail="Spotify is not connected.")
-    if _spotify_token_expired():
-        refreshed = spotify_refresh_token(refresh_token=_SPOTIFY_TOKENS["refresh_token"])
-        _SPOTIFY_TOKENS["access_token"] = refreshed["access_token"]
-        _SPOTIFY_TOKENS["expires_at"] = expires_at_from_now(int(refreshed.get("expires_in") or 3600))
-        if refreshed.get("refresh_token"):
-            _SPOTIFY_TOKENS["refresh_token"] = refreshed["refresh_token"]
-    return _SPOTIFY_TOKENS["access_token"]
 
 
 def _spotify_sync_profile() -> SpotifyProfile:
@@ -197,7 +182,7 @@ def patch_me(patch: Dict[str, Any]) -> User:
 
 @app.get("/spotify/status", response_model=SpotifySyncResponse)
 def spotify_status() -> SpotifySyncResponse:
-    return SpotifySyncResponse(spotify_connected=_spotify_is_connected(), spotify_profile=_USER.spotify_profile)
+    return SpotifySyncResponse(spotify_connected=spotify_is_connected(), spotify_profile=_USER.spotify_profile)
 
 
 @app.post("/spotify/exchange", response_model=SpotifySyncResponse)
@@ -209,10 +194,11 @@ def spotify_exchange(req: SpotifyExchangeRequest) -> SpotifySyncResponse:
     global _USER
     try:
         tok = spotify_exchange_code(code=req.code, code_verifier=req.code_verifier)
-        _SPOTIFY_TOKENS["access_token"] = tok["access_token"]
-        if tok.get("refresh_token"):
-            _SPOTIFY_TOKENS["refresh_token"] = tok["refresh_token"]
-        _SPOTIFY_TOKENS["expires_at"] = expires_at_from_now(int(tok.get("expires_in") or 3600))
+        spotify_set_tokens(
+            access_token=tok["access_token"],
+            refresh_token=tok.get("refresh_token"),
+            expires_in=int(tok.get("expires_in") or 3600),
+        )
         profile = _spotify_sync_profile()
     except SpotifyAuthError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -245,7 +231,7 @@ def spotify_sync() -> SpotifySyncResponse:
 @app.post("/spotify/disconnect", response_model=SpotifySyncResponse)
 def spotify_disconnect() -> SpotifySyncResponse:
     global _USER
-    _SPOTIFY_TOKENS.clear()
+    spotify_clear_tokens()
     _USER = User.model_validate({**_USER.model_dump(), "spotify_connected": False, "spotify_profile": None})
     return SpotifySyncResponse(spotify_connected=False, spotify_profile=None)
 
@@ -324,6 +310,11 @@ def ticketmaster_events(
     state_code: Optional[str] = Query(default=None, alias="stateCode"),
     country_code: Optional[str] = Query(default=None, alias="countryCode"),
     postal_code: Optional[str] = Query(default=None, alias="postalCode"),
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    geo_point: Optional[str] = Query(default=None, alias="geoPoint"),
+    radius: Optional[int] = None,
+    unit: str = "miles",
     classification_name: str = Query(default="music", alias="classificationName"),
     start_date_time: Optional[str] = Query(default=None, alias="startDateTime"),
     end_date_time: Optional[str] = Query(default=None, alias="endDateTime"),
@@ -360,13 +351,26 @@ def ticketmaster_events(
 
     if keyword:
         params["keyword"] = keyword
-    if postal_code:
+    # Prefer geoPoint (geohash) + radius when coordinates are supplied.
+    resolved_geo = (geo_point or "").strip()
+    if not resolved_geo and lat is not None and lng is not None:
+        try:
+            resolved_geo = geohash_encode(float(lat), float(lng), precision=9)
+        except Exception:
+            resolved_geo = ""
+
+    if resolved_geo:
+        params["geoPoint"] = resolved_geo
+        if radius is not None:
+            params["radius"] = max(1, min(int(radius), 500))
+            params["unit"] = "km" if str(unit).lower().strip() in ("km", "kilometers", "kilometres") else "miles"
+    elif postal_code:
         params["postalCode"] = postal_code
-    if city:
+    elif city:
         params["city"] = city
-    if state_code:
+    if state_code and not resolved_geo:
         params["stateCode"] = state_code
-    if country_code:
+    if country_code and not resolved_geo:
         params["countryCode"] = country_code
 
     url = "https://app.ticketmaster.com/discovery/v2/events.json?" + urllib.parse.urlencode(params)
