@@ -224,6 +224,8 @@ class SherpaState(TypedDict):
     rank_stats: dict[str, Any]
     # Node I output (strict picks + why)
     picks_payload: dict[str, Any]
+    # Node X output (failure branch)
+    failure: dict[str, Any]
 
 
 class RouteLocation(BaseModel):
@@ -997,15 +999,7 @@ def _plan_node_factory(profile: dict[str, Any]):
                 return {
                     "ticketmaster_ok": False,
                     "ticketmaster_error": str(e),
-                    "messages": [
-                        AIMessage(
-                            content=(
-                                "I couldn't fetch events from Ticketmaster right now.\n\n"
-                                f"Reason: {e}\n\n"
-                                "You can try again, narrow the time window, or change the location."
-                            )
-                        )
-                    ],
+                    "messages": [],
                 }
 
             # Stop conditions:
@@ -1017,6 +1011,57 @@ def _plan_node_factory(profile: dict[str, Any]):
                 break
 
         return {"ticketmaster_ok": True, "ticketmaster_error": "", "events": collected, "used_tool": True}
+
+    def api_failure_node(state: SherpaState) -> dict[str, Any]:
+        """
+        Node X: grounded failure/recovery branch.
+
+        Covers:
+        - Spotify not connected or Spotify token errors when Spotify is needed
+        - Ticketmaster request errors/timeouts
+
+        Always returns a deterministic message and ends the turn.
+        """
+        route = state.get("route") or {}
+        spotify_info = state.get("spotify") or {}
+        tm_ok = bool(state.get("ticketmaster_ok"))
+        tm_err = str(state.get("ticketmaster_error") or "").strip()
+
+        spotify_err = ""
+        if isinstance(spotify_info, dict):
+            spotify_err = str(spotify_info.get("error") or "").strip()
+
+        # Ticketmaster failure takes priority if it happened.
+        if not tm_ok and tm_err:
+            content = (
+                "I couldn't fetch events from Ticketmaster right now.\n\n"
+                f"Reason: {tm_err}\n\n"
+                "Try one of these:\n"
+                "- Retry the same request\n"
+                "- Narrow the time window (e.g., next 14 days)\n"
+                "- Change the location (city/state/country)\n"
+            )
+            return {"failure": {"kind": "ticketmaster", "error": tm_err}, "messages": [AIMessage(content=content)]}
+
+        # Spotify failures / missing connection when Spotify is needed.
+        if spotify_err:
+            # If the user asked for Spotify stats, the right recovery is "connect Spotify".
+            if str(route.get("intent") or "") == "SPOTIFY_STATS":
+                content = (
+                    "I can answer Spotify listening questions after you connect Spotify.\n\n"
+                    "Please connect Spotify in Settings / onboarding, then ask again."
+                )
+                return {"failure": {"kind": "spotify", "error": spotify_err}, "messages": [AIMessage(content=content)]}
+
+            # If user asked for 'good shows for me' but Spotify isn't available, ask for manual artists.
+            content = (
+                "I can't access your Spotify taste right now.\n\n"
+                "If you want, tell me 1–3 artists you like and I’ll search Ticketmaster near you."
+            )
+            return {"failure": {"kind": "spotify", "error": spotify_err}, "messages": [AIMessage(content=content)]}
+
+        # Fallback
+        return {"failure": {"kind": "unknown"}, "messages": [AIMessage(content="Something went wrong. Please try again.")]}
 
     def _parse_hhmm(s: str) -> Optional[int]:
         """
@@ -1491,6 +1536,7 @@ def _plan_node_factory(profile: dict[str, Any]):
     builder.add_node("rank_node", rank_node)
     builder.add_node("picks_why_node", picks_why_node)
     builder.add_node("render_node", render_node)
+    builder.add_node("api_failure_node", api_failure_node)
     builder.add_node("plan_node", plan_node)
     builder.add_node("tool_node", tool_node)
     builder.add_node("respond_legacy_node", respond_legacy_node)
@@ -1505,7 +1551,7 @@ def _plan_node_factory(profile: dict[str, Any]):
     builder.add_edge("clarify_node", END)
     builder.add_edge("normalize_time_node", "spotify_fetch_node")
 
-    def after_spotify_next(state: SherpaState) -> Literal["ticketmaster_search_node", "plan_node", "__end__"]:
+    def after_spotify_next(state: SherpaState) -> Literal["ticketmaster_search_node", "api_failure_node", "plan_node", "__end__"]:
         """
         After Node D:
         - If Spotify-only intent already responded, end.
@@ -1516,22 +1562,31 @@ def _plan_node_factory(profile: dict[str, Any]):
         if str(route.get("intent") or "") == "SPOTIFY_STATS" and not bool(route.get("needs_ticketmaster")):
             return "__end__"
         if bool(route.get("needs_ticketmaster")):
+            # If Spotify is required but unavailable for a taste-based query with no explicit artist,
+            # route to failure node to ask for manual artists.
+            spotify_err = ""
+            sp = state.get("spotify") or {}
+            if isinstance(sp, dict):
+                spotify_err = str(sp.get("error") or "").strip()
+            if spotify_err and not str(route.get("artist_query") or "").strip():
+                return "api_failure_node"
             return "ticketmaster_search_node"
         return "plan_node"
 
     builder.add_conditional_edges(
         "spotify_fetch_node",
         after_spotify_next,
-        ["ticketmaster_search_node", "plan_node", END],
+        ["ticketmaster_search_node", "api_failure_node", "plan_node", END],
     )
+    builder.add_edge("api_failure_node", END)
 
-    def after_ticketmaster_next(state: SherpaState) -> Literal["filter_best_effort_node", "__end__"]:
-        return "filter_best_effort_node" if bool(state.get("ticketmaster_ok")) else "__end__"
+    def after_ticketmaster_next(state: SherpaState) -> Literal["filter_best_effort_node", "api_failure_node"]:
+        return "filter_best_effort_node" if bool(state.get("ticketmaster_ok")) else "api_failure_node"
 
     builder.add_conditional_edges(
         "ticketmaster_search_node",
         after_ticketmaster_next,
-        ["filter_best_effort_node", END],
+        ["filter_best_effort_node", "api_failure_node"],
     )
     builder.add_edge("filter_best_effort_node", "rank_node")
     builder.add_edge("rank_node", "picks_why_node")
@@ -1571,6 +1626,7 @@ def run_agent(message: str, profile: dict[str, Any], history: list[dict[str, Any
             "filter_stats": {},
             "rank_stats": {},
             "picks_payload": {},
+            "failure": {},
         }
     )
     messages = state.get("messages") or []
