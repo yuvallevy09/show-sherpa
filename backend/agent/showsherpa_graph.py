@@ -1341,6 +1341,54 @@ def _plan_node_factory(profile: dict[str, Any]):
             question=draft.question,
         )
         return {"picks_payload": payload.model_dump()}
+    def render_node(state: SherpaState) -> dict[str, Any]:
+        """
+        Node J: deterministic renderer for the Ticketmaster pipeline.
+        Never calls the LLM. Renders ONLY from Ticketmaster event objects + picks_payload.
+        """
+        events = list(state.get("events") or [])
+        if not events:
+            return {"messages": [AIMessage(content="I searched Ticketmaster but didn’t find any matching music events for the selected window.")]}
+
+        picks_payload = state.get("picks_payload") or {}
+        parsed: Optional[PicksWhyOutput] = None
+        if isinstance(picks_payload, dict):
+            try:
+                parsed = PicksWhyOutput.model_validate(picks_payload)
+            except Exception:
+                parsed = None
+
+        by_id = {str(ev.get("id") or ""): ev for ev in events}
+        intro = "Here are a few real, bookable concerts I found:"
+        question: Optional[str] = None
+        lines: list[str] = []
+
+        if parsed and parsed.picks:
+            intro = (parsed.intro or intro).strip()
+            question = parsed.question
+            for p in parsed.picks[:3]:
+                ev = by_id.get(p.id)
+                if not ev:
+                    continue
+                line = _render_event_line(ev)
+                why = (p.why or "").strip()
+                if why:
+                    line = line + f"\n  _Why_: {why}"
+                lines.append(line)
+
+        if not lines:
+            # Fallback: show top 5 events (already ranked by Node G)
+            lines = [_render_event_line(ev) for ev in events[:5] if (ev.get("name") or "").strip()]
+
+        content = intro.strip() + "\n\n" + "\n".join(lines)
+        if question:
+            content += "\n\n" + str(question).strip()
+
+        filter_notes = str(state.get("filter_notes") or "").strip()
+        if filter_notes:
+            content += "\n\n" + filter_notes
+
+        return {"messages": [AIMessage(content=content)]}
     def plan_node(state: SherpaState) -> dict[str, Any]:
         sys = SystemMessage(
             content=_system_profile(profile)
@@ -1538,6 +1586,7 @@ def _plan_node_factory(profile: dict[str, Any]):
     builder.add_node("filter_best_effort_node", filter_best_effort_node)
     builder.add_node("rank_node", rank_node)
     builder.add_node("picks_why_node", picks_why_node)
+    builder.add_node("render_node", render_node)
     builder.add_node("plan_node", plan_node)
     builder.add_node("tool_node", tool_node)
     builder.add_node("respond_node", respond_node)
@@ -1582,7 +1631,8 @@ def _plan_node_factory(profile: dict[str, Any]):
     )
     builder.add_edge("filter_best_effort_node", "rank_node")
     builder.add_edge("rank_node", "picks_why_node")
-    builder.add_edge("picks_why_node", "respond_node")
+    builder.add_edge("picks_why_node", "render_node")
+    builder.add_edge("render_node", END)
 
     builder.add_conditional_edges("plan_node", should_continue, ["tool_node", "respond_node"])
     builder.add_edge("tool_node", "respond_node")
