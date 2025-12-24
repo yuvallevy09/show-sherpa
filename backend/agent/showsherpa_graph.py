@@ -217,6 +217,13 @@ class SherpaState(TypedDict):
     # Node E status (Ticketmaster deterministic search)
     ticketmaster_ok: bool
     ticketmaster_error: str
+    # Node F output (best-effort constraint filtering)
+    filter_notes: str
+    filter_stats: dict[str, Any]
+    # Node G output (ranking)
+    rank_stats: dict[str, Any]
+    # Node I output (strict picks + why)
+    picks_payload: dict[str, Any]
 
 
 class RouteLocation(BaseModel):
@@ -272,6 +279,17 @@ class TimeWindowOutput(BaseModel):
     type: Literal["RELATIVE", "ABSOLUTE", "OPEN_ENDED", "DEFAULT"] = "DEFAULT"
     startDateTime: str = ""
     endDateTime: str = ""
+
+
+class PickWhyItem(BaseModel):
+    id: str
+    why: str = ""
+
+
+class PicksWhyOutput(BaseModel):
+    intro: str = "Here are a few real, bookable concerts I found:"
+    picks: list[PickWhyItem] = Field(default_factory=list)
+    question: Optional[str] = None
 
 
 def _system_profile(profile: dict[str, Any]) -> str:
@@ -1000,6 +1018,329 @@ def _plan_node_factory(profile: dict[str, Any]):
 
         return {"ticketmaster_ok": True, "ticketmaster_error": "", "events": collected, "used_tool": True}
 
+    def _parse_hhmm(s: str) -> Optional[int]:
+        """
+        Parse 'HH:MM' or 'HH:MM:SS' into minutes since midnight.
+        Returns None if unparseable.
+        """
+        raw = (s or "").strip()
+        if not raw:
+            return None
+        parts = raw.split(":")
+        if len(parts) < 2:
+            return None
+        try:
+            hh = int(parts[0])
+            mm = int(parts[1])
+        except Exception:
+            return None
+        if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+            return None
+        return hh * 60 + mm
+
+    def filter_best_effort_node(state: SherpaState) -> dict[str, Any]:
+        """
+        Node F: apply best-effort constraint filtering to Ticketmaster candidates.
+
+        Supports (MVP):
+        - weekend_only
+        - after_time (e.g. "20:30")
+        - genres (best-effort substring match vs event.genre)
+
+        Important: if event time is missing/TBA, we do NOT filter it out for after_time;
+        we keep it and record a disclaimer in filter_notes.
+        """
+        route_raw = state.get("route") or {}
+        try:
+            route = RouteOutput.model_validate(route_raw)
+        except Exception:
+            return {"filter_notes": "", "filter_stats": {}}
+
+        events = list(state.get("events") or [])
+        if not events:
+            return {"filter_notes": "", "filter_stats": {"kept": 0, "dropped": 0}}
+
+        constraints = route.constraints
+        want_weekend = bool(constraints.weekend_only)
+        want_after = (constraints.after_time or "").strip()
+        after_min = _parse_hhmm(want_after) if want_after else None
+        want_genres = [g.strip().lower() for g in (constraints.genres or []) if str(g).strip()]
+
+        unknown_time = 0
+        dropped_weekend = 0
+        dropped_time = 0
+        dropped_genre = 0
+
+        kept: list[dict[str, Any]] = []
+        for ev in events:
+            # Weekend filter
+            if want_weekend:
+                ds = str(ev.get("date") or "").strip()
+                ok_weekend = True
+                try:
+                    # date is YYYY-MM-DD
+                    dt = datetime.fromisoformat(ds)
+                    ok_weekend = dt.weekday() >= 5
+                except Exception:
+                    # If date missing/unparseable, do not drop (best-effort).
+                    ok_weekend = True
+                if not ok_weekend:
+                    dropped_weekend += 1
+                    continue
+
+            # Genre filter (best-effort)
+            if want_genres:
+                g = str(ev.get("genre") or "").lower()
+                if g and not any(wg in g for wg in want_genres):
+                    dropped_genre += 1
+                    continue
+                # If genre missing, keep (best-effort).
+
+            # After-time filter (best-effort)
+            if after_min is not None:
+                ts = str(ev.get("time") or "").strip()
+                tmin = _parse_hhmm(ts)
+                if tmin is None:
+                    # time missing/TBA: keep, but note we couldn't strictly enforce.
+                    unknown_time += 1
+                else:
+                    if tmin < after_min:
+                        dropped_time += 1
+                        continue
+
+            kept.append(ev)
+
+        notes: list[str] = []
+        if after_min is not None and unknown_time:
+            notes.append(
+                f"Note: {unknown_time} event(s) have no listed start time (TBA), so I couldn’t strictly enforce “after {want_after}”."
+            )
+        if want_weekend:
+            notes.append("Weekend filtering is based on the listed event date; venue time zones/door times may differ.")
+
+        filter_notes = "\n".join(notes).strip()
+        stats = {
+            "input": len(events),
+            "kept": len(kept),
+            "dropped": len(events) - len(kept),
+            "dropped_weekend": dropped_weekend,
+            "dropped_time": dropped_time,
+            "dropped_genre": dropped_genre,
+            "unknown_time": unknown_time,
+        }
+        return {"events": kept, "filter_notes": filter_notes, "filter_stats": stats}
+
+    def _norm(s: str) -> str:
+        return re.sub(r"\s+", " ", str(s or "").strip().lower())
+
+    def rank_node(state: SherpaState) -> dict[str, Any]:
+        """
+        Node G: deterministic scoring + ranking.
+
+        Goals (MVP):
+        - If explicit artist_query is present: prioritize exact/strong matches.
+        - If subjective/taste-based: prioritize Spotify top-artist matches, then genre overlap.
+        - Penalize missing time when user asked for an after_time constraint (but do not drop events).
+        - Keep sort stable by original order for ties.
+        """
+        route_raw = state.get("route") or {}
+        try:
+            route = RouteOutput.model_validate(route_raw)
+        except Exception:
+            return {"rank_stats": {"skipped": True}}
+
+        events = list(state.get("events") or [])
+        if not events:
+            return {"rank_stats": {"input": 0, "kept": 0}}
+
+        # Inputs
+        artist_q = _norm(route.artist_query)
+        want_after = (route.constraints.after_time or "").strip()
+        after_min = _parse_hhmm(want_after) if want_after else None
+
+        # Taste inputs (from Node D)
+        taste = ((state.get("spotify") or {}).get("taste") or {}) if isinstance(state.get("spotify"), dict) else {}
+        top_artists = [_norm(a) for a in (taste.get("top_artists") or []) if str(a).strip()]
+        top_genres = [_norm(g) for g in (taste.get("top_genres") or []) if str(g).strip()]
+
+        # Caps for scoring work (avoid worst-case costs)
+        top_artists = top_artists[:25]
+        top_genres = top_genres[:10]
+
+        scored: list[tuple[float, int, dict[str, Any], dict[str, Any]]] = []
+        missing_time_count = 0
+
+        for idx, ev in enumerate(events):
+            name = _norm(ev.get("name") or "")
+            artist = _norm(ev.get("artist") or "")
+            genre = _norm(ev.get("genre") or "")
+            t = str(ev.get("time") or "").strip()
+            tmin = _parse_hhmm(t)
+
+            breakdown: dict[str, Any] = {}
+            score = 0.0
+
+            # 1) Explicit artist query match (strongest)
+            if artist_q:
+                # exact-ish match gets big boost
+                if artist_q and (artist_q == artist or artist_q == name):
+                    score += 5.0
+                    breakdown["artist_query_match"] = "exact"
+                elif artist_q and (artist_q in artist or artist_q in name or artist in artist_q or name in artist_q):
+                    score += 3.5
+                    breakdown["artist_query_match"] = "partial"
+                else:
+                    breakdown["artist_query_match"] = "none"
+
+            # 2) Taste match via Spotify top artists (medium-strong)
+            if top_artists:
+                if artist and any(ta == artist for ta in top_artists):
+                    score += 2.5
+                    breakdown["spotify_artist_match"] = "exact"
+                elif artist and any(ta in artist or artist in ta for ta in top_artists[:10]):
+                    score += 1.5
+                    breakdown["spotify_artist_match"] = "partial"
+
+            # 3) Genre overlap (medium)
+            if top_genres and genre:
+                if any(g in genre for g in top_genres):
+                    score += 0.8
+                    breakdown["genre_overlap"] = True
+
+            # 4) Time constraint fit (small boost / penalty for missingness)
+            if after_min is not None:
+                if tmin is None:
+                    missing_time_count += 1
+                    score -= 0.15  # slight penalty so known-good times rank above unknown
+                    breakdown["time_after"] = "unknown"
+                elif tmin >= after_min:
+                    score += 0.2
+                    breakdown["time_after"] = "ok"
+                else:
+                    # Should usually be filtered out by Node F, but keep defensive.
+                    score -= 1.0
+                    breakdown["time_after"] = "fails"
+
+            scored.append((score, idx, ev, breakdown))
+
+        # Stable sort: score desc, then original index asc
+        scored.sort(key=lambda tup: (-tup[0], tup[1]))
+        ranked_events = [ev for _, _, ev, _ in scored]
+
+        stats = {
+            "input": len(events),
+            "kept": len(ranked_events),
+            "missing_time": missing_time_count,
+            "has_artist_query": bool(artist_q),
+            "has_taste": bool(top_artists or top_genres),
+        }
+
+        # Keep breakdowns only for debugging (not used by renderer yet), but store a small sample.
+        sample = []
+        for s, _, ev, b in scored[: min(5, len(scored))]:
+            sample.append({"id": ev.get("id"), "score": s, "breakdown": b})
+        stats["top_sample"] = sample
+
+        return {"events": ranked_events, "rank_stats": stats}
+
+    def picks_why_node(state: SherpaState) -> dict[str, Any]:
+        """
+        Node I: strict structured output for 'picks + why'.
+
+        - Input: ranked events (state.events)
+        - Output: state.picks_payload = {intro, picks:[{id,why}], question}
+        - Constraints:
+          - IDs must exist in provided events
+          - Max 3 picks
+          - One retry, then deterministic fallback to top 3
+        """
+        events = list(state.get("events") or [])
+        if not events:
+            payload = PicksWhyOutput(
+                intro="I searched Ticketmaster but didn’t find any matching music events for that window.",
+                picks=[],
+                question="Want to broaden the date range or try a nearby city?",
+            )
+            return {"picks_payload": payload.model_dump()}
+
+        # Build compact events for the LLM: include only identifiers + high-level descriptors.
+        compact_events = [
+            {
+                "id": str(ev.get("id") or ""),
+                "name": str(ev.get("name") or ""),
+                "artist": str(ev.get("artist") or ""),
+                "venue": str(ev.get("venue") or ""),
+                "date": str(ev.get("date") or ""),
+                "time": str(ev.get("time") or ""),
+                "genre": str(ev.get("genre") or ""),
+                "price": str(ev.get("price") or ""),
+            }
+            for ev in events[:50]
+        ]
+
+        # Provide small scoring hints if available.
+        rank_stats = state.get("rank_stats") or {}
+        score_hints = rank_stats.get("top_sample") if isinstance(rank_stats, dict) else None
+
+        sys = SystemMessage(
+            content=_system_profile(profile)
+            + "\nYou are selecting the best 3 concerts from a list of Ticketmaster events.\n"
+            + "Return ONLY structured data matching the schema.\n"
+            + "Rules:\n"
+            + "- Never invent events or facts.\n"
+            + "- Picks must use ONLY IDs that appear in the provided events.\n"
+            + "- Provide at most 3 picks.\n"
+            + "- 'why' should be short and should reference general reasoning (taste match, genre, timing) without inventing facts.\n"
+        )
+
+        def _call(strict_extra: str = "") -> PicksWhyOutput:
+            out_llm = llm.with_structured_output(PicksWhyOutput)
+            user = HumanMessage(
+                content=json.dumps(
+                    {"events": compact_events, "score_hints": score_hints, "user_request": (state.get("user_input") or "")},
+                    ensure_ascii=False,
+                )
+            )
+            if strict_extra:
+                sys2 = SystemMessage(content=sys.content + "\n" + strict_extra)
+                return out_llm.invoke([sys2, user])
+            return out_llm.invoke([sys, user])
+
+        try:
+            draft = _call()
+        except Exception:
+            try:
+                draft = _call("CRITICAL: Output MUST match schema exactly. No extra keys. No prose.")
+            except Exception:
+                draft = PicksWhyOutput()
+
+        # Validate IDs and cap to 3
+        by_id = {str(ev.get("id") or ""): ev for ev in events if str(ev.get("id") or "")}
+        valid: list[PickWhyItem] = []
+        for p in (draft.picks or [])[:3]:
+            pid = str(getattr(p, "id", "") or "").strip()
+            if not pid or pid not in by_id:
+                continue
+            why = str(getattr(p, "why", "") or "").strip()
+            valid.append(PickWhyItem(id=pid, why=why))
+
+        if not valid:
+            # Deterministic fallback: top 3 ranked events.
+            fallback = []
+            for ev in events[:3]:
+                pid = str(ev.get("id") or "").strip()
+                if not pid:
+                    continue
+                fallback.append(PickWhyItem(id=pid, why="Popular match based on your query and the available event details."))
+            payload = PicksWhyOutput(intro=str(draft.intro or PicksWhyOutput().intro), picks=fallback, question=draft.question)
+            return {"picks_payload": payload.model_dump()}
+
+        payload = PicksWhyOutput(
+            intro=str(draft.intro or PicksWhyOutput().intro),
+            picks=valid,
+            question=draft.question,
+        )
+        return {"picks_payload": payload.model_dump()}
     def plan_node(state: SherpaState) -> dict[str, Any]:
         sys = SystemMessage(
             content=_system_profile(profile)
@@ -1046,6 +1387,34 @@ def _plan_node_factory(profile: dict[str, Any]):
                     )
                 ]
             }
+
+        # If Node I produced picks_payload, render deterministically from it.
+        picks_payload = state.get("picks_payload") or {}
+        if isinstance(picks_payload, dict) and picks_payload.get("picks"):
+            try:
+                parsed = PicksWhyOutput.model_validate(picks_payload)
+            except Exception:
+                parsed = None
+            if parsed:
+                by_id = {str(ev.get("id") or ""): ev for ev in events}
+                lines = []
+                for p in parsed.picks[:3]:
+                    ev = by_id.get(p.id)
+                    if not ev:
+                        continue
+                    line = _render_event_line(ev)
+                    why = (p.why or "").strip()
+                    if why:
+                        line = line + f"\n  _Why_: {why}"
+                    lines.append(line)
+                intro = (parsed.intro or "Here are a few real, bookable concerts I found:").strip()
+                content = intro + "\n\n" + "\n".join(lines if lines else [_render_events(events, limit=5)])
+                if parsed.question:
+                    content += "\n\n" + str(parsed.question).strip()
+                filter_notes = str(state.get("filter_notes") or "").strip()
+                if filter_notes:
+                    content += "\n\n" + filter_notes
+                return {"messages": [AIMessage(content=content)]}
 
         # Strong hallucination control: ask the LLM to pick event IDs + reasons, then we render facts ourselves.
         compact_events = [
@@ -1118,6 +1487,9 @@ def _plan_node_factory(profile: dict[str, Any]):
         content = intro.strip() + "\n\n" + "\n".join(lines)
         if question:
             content += "\n\n" + str(question).strip()
+        filter_notes = str(state.get("filter_notes") or "").strip()
+        if filter_notes:
+            content += "\n\n" + filter_notes
         return {"messages": [AIMessage(content=content)]}
 
     def should_continue(state: SherpaState) -> Literal["tool_node", "respond_node"]:
@@ -1163,6 +1535,9 @@ def _plan_node_factory(profile: dict[str, Any]):
     builder.add_node("normalize_time_node", normalize_time_node)
     builder.add_node("spotify_fetch_node", spotify_fetch_node)
     builder.add_node("ticketmaster_search_node", ticketmaster_search_node)
+    builder.add_node("filter_best_effort_node", filter_best_effort_node)
+    builder.add_node("rank_node", rank_node)
+    builder.add_node("picks_why_node", picks_why_node)
     builder.add_node("plan_node", plan_node)
     builder.add_node("tool_node", tool_node)
     builder.add_node("respond_node", respond_node)
@@ -1197,14 +1572,17 @@ def _plan_node_factory(profile: dict[str, Any]):
         ["ticketmaster_search_node", "plan_node", END],
     )
 
-    def after_ticketmaster_next(state: SherpaState) -> Literal["respond_node", "__end__"]:
-        return "respond_node" if bool(state.get("ticketmaster_ok")) else "__end__"
+    def after_ticketmaster_next(state: SherpaState) -> Literal["filter_best_effort_node", "__end__"]:
+        return "filter_best_effort_node" if bool(state.get("ticketmaster_ok")) else "__end__"
 
     builder.add_conditional_edges(
         "ticketmaster_search_node",
         after_ticketmaster_next,
-        ["respond_node", END],
+        ["filter_best_effort_node", END],
     )
+    builder.add_edge("filter_best_effort_node", "rank_node")
+    builder.add_edge("rank_node", "picks_why_node")
+    builder.add_edge("picks_why_node", "respond_node")
 
     builder.add_conditional_edges("plan_node", should_continue, ["tool_node", "respond_node"])
     builder.add_edge("tool_node", "respond_node")
@@ -1235,6 +1613,10 @@ def run_agent(message: str, profile: dict[str, Any], history: list[dict[str, Any
             "spotify": {},
             "ticketmaster_ok": True,
             "ticketmaster_error": "",
+            "filter_notes": "",
+            "filter_stats": {},
+            "rank_stats": {},
+            "picks_payload": {},
         }
     )
     messages = state.get("messages") or []
