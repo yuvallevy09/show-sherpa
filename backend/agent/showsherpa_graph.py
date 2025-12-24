@@ -9,14 +9,12 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Literal
 
-from langchain.tools import tool
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
     SystemMessage,
-    ToolMessage,
     AnyMessage,
 )
 from langgraph.graph import StateGraph, START, END
@@ -136,47 +134,6 @@ def _ticketmaster_search_raw(
     with urllib.request.urlopen(req, timeout=10) as resp:
         raw = resp.read().decode("utf-8")
         return json.loads(raw)
-
-
-@tool
-def search_ticketmaster_events(
-    city: str,
-    stateCode: str,
-    countryCode: str,
-    keyword: str | None = None,
-    days: int = 30,
-    size: int = 10,
-) -> str:
-    """
-    Search real, bookable music events from Ticketmaster Discovery API.
-
-    Args:
-      city: City (e.g. "New York")
-      stateCode: State/region code (e.g. "NY")
-      countryCode: Country code (e.g. "US")
-      keyword: Optional keyword/artist to filter by
-      days: Lookahead window in days (default 30)
-      size: Max results (default 10)
-
-    Returns:
-      JSON string with shape: { "events": [ ...normalized events... ] }
-    """
-    now = datetime.now(timezone.utc)
-    start = _iso_utc(now)
-    end = _iso_utc(now + timedelta(days=max(1, min(int(days), 180))))
-
-    data = _ticketmaster_search_raw(
-        keyword=keyword,
-        city=city,
-        state_code=stateCode,
-        country_code=countryCode,
-        start_date_time=start,
-        end_date_time=end,
-        size=size,
-    )
-    events_raw = ((data.get("_embedded") or {}).get("events")) or []
-    events = [_normalize_event(ev) for ev in events_raw]
-    return json.dumps({"events": events})
 
 
 def _get_llm():
@@ -350,9 +307,6 @@ def _coerce_history_messages(history: list[dict[str, Any]] | None) -> list[AnyMe
 
 def _plan_node_factory(profile: dict[str, Any]):
     llm = _get_llm()
-    tools = [search_ticketmaster_events]
-    tools_by_name = {t.name: t for t in tools}
-    llm_with_tools = llm.bind_tools(tools)
 
     def ingest_node(state: SherpaState) -> dict[str, Any]:
         """
@@ -1434,68 +1388,31 @@ def _plan_node_factory(profile: dict[str, Any]):
             content += "\n\n" + filter_notes
 
         return {"messages": [AIMessage(content=content)]}
-    def plan_node(state: SherpaState) -> dict[str, Any]:
-        sys = SystemMessage(
-            content=_system_profile(profile)
-            + "\nDecide whether to call the tool.\n"
-            "If the user asks for concerts, you SHOULD call the tool unless location is missing.\n"
-            "If location is missing, ask a clarifying question for city/state/country.\n"
-        )
-        msg = llm_with_tools.invoke([sys] + state["messages"])
-        return {"messages": [msg]}
-
-    def tool_node(state: SherpaState) -> dict[str, Any]:
-        last = state["messages"][-1]
-        if not isinstance(last, AIMessage) or not last.tool_calls:
-            return {"messages": [], "events": [], "used_tool": False}
-        out_messages: list[AnyMessage] = []
-        collected: list[dict[str, Any]] = []
-        for tc in last.tool_calls:
-            tool_obj = tools_by_name.get(tc["name"])
-            if not tool_obj:
-                continue
-            observation = tool_obj.invoke(tc["args"])
-            out_messages.append(ToolMessage(content=observation, tool_call_id=tc["id"]))
-            try:
-                parsed = json.loads(observation or "{}")
-                evs = parsed.get("events") or []
-                if isinstance(evs, list):
-                    collected.extend(evs)
-            except Exception:
-                pass
-        return {"messages": out_messages, "events": collected, "used_tool": True}
-
-    def respond_legacy_node(state: SherpaState) -> dict[str, Any]:
-        # If we didn't call any tool, keep the planner's response (often a clarifying question).
-        if not state.get("used_tool"):
-            return {"messages": []}
-
-        # Use the tool results (events) as the only “facts”.
-        events = state.get("events") or []
-        if not events:
-            return {
-                "messages": [
-                    AIMessage(
-                        content="I searched Ticketmaster but didn’t find any matching music events in your area for the selected window. Try a nearby city, broaden the date range, or add a keyword/artist."
+    def fallback_respond_node(state: SherpaState) -> dict[str, Any]:
+        """
+        Deterministic responder for requests that don't require Ticketmaster and aren't Spotify-only.
+        Prevents empty outputs when intent is OTHER.
+        """
+        route = state.get("route") or {}
+        q = str(route.get("clarifying_question") or "").strip()
+        if q:
+            return {"messages": [AIMessage(content=q)]}
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "I can help with:\n"
+                        "- Finding real, bookable concerts near you (Ticketmaster)\n"
+                        "- Answering Spotify listening questions (top artists/tracks/genres)\n\n"
+                        "What would you like to do?"
                     )
-                ]
-            }
+                )
+            ]
+        }
 
-        # Legacy path: keep it fully grounded and deterministic.
-        # (The deterministic pipeline uses Node I + Node J for LLM picks/explanations.)
-        content = "Here are a few real, bookable concerts I found:\n\n" + _render_events(events, limit=5)
-        filter_notes = str(state.get("filter_notes") or "").strip()
-        if filter_notes:
-            content += "\n\n" + filter_notes
-        return {"messages": [AIMessage(content=content)]}
-
-    def should_continue(state: SherpaState) -> Literal["tool_node", "respond_node"]:
-        last = state["messages"][-1]
-        if isinstance(last, AIMessage) and last.tool_calls:
-            return "tool_node"
-        return "respond_node"
-
-    def should_clarify_or_continue(state: SherpaState) -> Literal["clarify_node", "spotify_fetch_node", "normalize_time_node"]:
+    def should_clarify_or_continue(
+        state: SherpaState,
+    ) -> Literal["clarify_node", "spotify_fetch_node", "normalize_time_node", "fallback_respond_node"]:
         """
         After routing, decide whether we need a clarifying question before proceeding.
         Deterministic gate in addition to Node A's suggestion.
@@ -1507,7 +1424,7 @@ def _plan_node_factory(profile: dict[str, Any]):
 
         needs_tm = bool(route.get("needs_ticketmaster"))
         if not needs_tm:
-            return "normalize_time_node"
+            return "fallback_respond_node"
 
         # If user provided a location override in slots, accept it (even partial) for now.
         override = route.get("location_override") or {}
@@ -1529,6 +1446,7 @@ def _plan_node_factory(profile: dict[str, Any]):
     builder.add_node("memory_node", memory_node)
     builder.add_node("route_and_extract_node", route_and_extract_node)
     builder.add_node("clarify_node", clarify_node)
+    builder.add_node("fallback_respond_node", fallback_respond_node)
     builder.add_node("normalize_time_node", normalize_time_node)
     builder.add_node("spotify_fetch_node", spotify_fetch_node)
     builder.add_node("ticketmaster_search_node", ticketmaster_search_node)
@@ -1537,26 +1455,26 @@ def _plan_node_factory(profile: dict[str, Any]):
     builder.add_node("picks_why_node", picks_why_node)
     builder.add_node("render_node", render_node)
     builder.add_node("api_failure_node", api_failure_node)
-    builder.add_node("plan_node", plan_node)
-    builder.add_node("tool_node", tool_node)
-    builder.add_node("respond_legacy_node", respond_legacy_node)
     builder.add_edge(START, "ingest_node")
     builder.add_edge("ingest_node", "memory_node")
     builder.add_edge("memory_node", "route_and_extract_node")
     builder.add_conditional_edges(
         "route_and_extract_node",
         should_clarify_or_continue,
-        ["clarify_node", "spotify_fetch_node", "normalize_time_node"],
+        ["clarify_node", "spotify_fetch_node", "normalize_time_node", "fallback_respond_node"],
     )
     builder.add_edge("clarify_node", END)
+    builder.add_edge("fallback_respond_node", END)
     builder.add_edge("normalize_time_node", "spotify_fetch_node")
 
-    def after_spotify_next(state: SherpaState) -> Literal["ticketmaster_search_node", "api_failure_node", "plan_node", "__end__"]:
+    def after_spotify_next(
+        state: SherpaState,
+    ) -> Literal["ticketmaster_search_node", "api_failure_node", "fallback_respond_node", "__end__"]:
         """
         After Node D:
         - If Spotify-only intent already responded, end.
         - If Ticketmaster is needed, go to Node E deterministic search.
-        - Otherwise fall back to the old LLM planner path.
+        - Otherwise respond deterministically.
         """
         route = state.get("route") or {}
         if str(route.get("intent") or "") == "SPOTIFY_STATS" and not bool(route.get("needs_ticketmaster")):
@@ -1571,12 +1489,12 @@ def _plan_node_factory(profile: dict[str, Any]):
             if spotify_err and not str(route.get("artist_query") or "").strip():
                 return "api_failure_node"
             return "ticketmaster_search_node"
-        return "plan_node"
+        return "fallback_respond_node"
 
     builder.add_conditional_edges(
         "spotify_fetch_node",
         after_spotify_next,
-        ["ticketmaster_search_node", "api_failure_node", "plan_node", END],
+        ["ticketmaster_search_node", "api_failure_node", "fallback_respond_node", END],
     )
     builder.add_edge("api_failure_node", END)
 
@@ -1592,10 +1510,6 @@ def _plan_node_factory(profile: dict[str, Any]):
     builder.add_edge("rank_node", "picks_why_node")
     builder.add_edge("picks_why_node", "render_node")
     builder.add_edge("render_node", END)
-
-    builder.add_conditional_edges("plan_node", should_continue, ["tool_node", "respond_legacy_node"])
-    builder.add_edge("tool_node", "respond_legacy_node")
-    builder.add_edge("respond_legacy_node", END)
     graph = builder.compile()
 
     return graph
